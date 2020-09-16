@@ -2,6 +2,7 @@ package lar
 
 import (
 	"archive/zip"
+	"bytes"
 	"errors"
 	"github.com/DGHeroin/golua/lua"
 	"io"
@@ -35,14 +36,14 @@ table.remove(package.searchers, 3)
 
 `
 )
-
+//Lua Archive
 type Lar struct {
 	z           *zip.ReadCloser
 	readiedFile map[string][]byte
 	fileReaders map[string]io.ReadCloser
 	L           *lua.State
 }
-
+// New Lar
 func New() *Lar {
 	lar := &Lar{}
 	lar.readiedFile = make(map[string][]byte)
@@ -52,13 +53,14 @@ func New() *Lar {
 	L.OpenGoLibs()
 	L.PushGoStruct(lar)
 	L.SetGlobal("LarContext")
-	L.Register("lar_load", lar_load)
+	L.Register("lar_load", lload)
 
 	_ = L.DoString(InitCode)
 	lar.L = L
 	return lar
 }
-func lar_load(L *lua.State) int {
+// search lua file in lar
+func lload(L *lua.State) int {
 	name := L.ToString(1)
 	L.GetGlobal("LarContext")
 	_app := L.ToGoStruct(-1)
@@ -73,7 +75,7 @@ func lar_load(L *lua.State) int {
 	}
 	return 0
 }
-
+// pack dir all lua file to a lar file
 func (l *Lar) Pack(dst, src string) error {
 	fw, err := os.Create(dst)
 	defer fw.Close()
@@ -121,38 +123,29 @@ func (l *Lar) Pack(dst, src string) error {
 		return err
 	})
 }
-
+// close lar
 func (l *Lar) Close() {
 	if l.z != nil {
 		_ = l.z.Close()
 	}
 	l.z = nil
 }
-
-func (l *Lar) Load(file string, filename string) error {
-	if err := l.preloadLarFile(file); err != nil {
-		return err
-	}
-	return l.runFileInLar(filename)
-}
-
-func (l *Lar) RunDiskFile(filename string) error {
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return err
-	}
-	return l.runString(string(data))
-}
-
-func (l *Lar) preloadLarFile(file string) error {
+// load lar form file disk
+func (l *Lar) LoadFile(file string, filename string) error {
 	if _, err := os.Stat(file); err != nil {
 		if os.IsNotExist(err) {
 			return ErrorLarFileNotFound
 		}
 		return err
 	}
+	if err := l.preloadLarFile(file); err != nil {
+		return err
+	}
+	return l.runFileInLar(filename)
+}
+// init lar from file
+func (l *Lar) preloadLarFile(file string) error {
 	zr, err := zip.OpenReader(file)
-	l.z = zr
 	if err != nil {
 		return err
 	}
@@ -169,7 +162,40 @@ func (l *Lar) preloadLarFile(file string) error {
 
 	return nil
 }
+// load lar form memory
+func (l *Lar) LoadMemory(data []byte, filename string) error {
+	r := bytes.NewReader(data)
+	l.preloadLarMemory(r, r.Size())
+	return l.runFileInLar(filename)
+}
+// init memory lar
+func (l *Lar) preloadLarMemory(r io.ReaderAt, sz int64) error {
+	zr, err := zip.NewReader(r, sz)
+	if err != nil {
+		return err
+	}
+	for _, file := range zr.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		fr, err := file.Open()
+		if err != nil {
+			return err
+		}
+		l.fileReaders[file.Name] = fr
+	}
 
+	return nil
+}
+// run lua from disk
+func (l *Lar) RunDiskFile(filename string) error {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	return l.runString(string(data))
+}
+// get bytes data in lar file
 func (l *Lar) getBytes(filename string) ([]byte, error) {
 	if cacheByte, ok := l.readiedFile[filename]; ok {
 		return cacheByte, nil
@@ -184,7 +210,7 @@ func (l *Lar) getBytes(filename string) ([]byte, error) {
 	}
 	return nil, ErrorLuaFileNotFound
 }
-
+// do file in lar
 func (l *Lar) runFileInLar(filename string) error {
 	data, err := l.getBytes(filename)
 	if err != nil {
@@ -192,9 +218,11 @@ func (l *Lar) runFileInLar(filename string) error {
 	}
 	return l.runString(string(data))
 }
+// dostring
 func (l *Lar) runString(code string) error {
 	return l.L.DoString(code)
 }
+// add lua search path in filesystem
 func (l *Lar) AddSearchPath(s string) {
 	if s == "" {
 		return
@@ -223,9 +251,10 @@ func (l *Lar) AddSearchPath(s string) {
 	L.SetTable(-3)
 	os.Setenv("LUA_PATH", "scripts/?.lua")
 }
+// make []string item unique
 func unique(intSlice []string) []string {
 	keys := make(map[string]bool)
-	list := []string{}
+	var list []string
 	for _, entry := range intSlice {
 		if _, value := keys[entry]; !value {
 			keys[entry] = true
