@@ -11,6 +11,7 @@ import (
 var (
     dir = flag.String("d", "", "dir")
     name = flag.String("o", "", "output lar file name")
+    root = flag.String("r", "", "root dir of scripts")
 )
 func main()  {
     flag.Parse()
@@ -24,7 +25,7 @@ func main()  {
         }
     }
     lar := lar.New()
-    if err := lar.Pack(dst, *dir); err != nil{
+    if err := lar.Pack(dst, *dir, *root); err != nil{
         fmt.Println(err)
     }
 }

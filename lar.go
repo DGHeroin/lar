@@ -1,25 +1,27 @@
 package lar
 
 import (
-	"archive/zip"
-	"bytes"
-	"errors"
-	"github.com/DGHeroin/golua/lua"
-	"io"
-	"io/ioutil"
-	"log"
-	"os"
-	"path/filepath"
-	"strings"
+    "archive/zip"
+    "errors"
+    "github.com/DGHeroin/golua/lua"
+    "io"
+    "io/ioutil"
+    "log"
+    "os"
+    "path/filepath"
+    "strings"
+    "sync"
 )
 
 var (
-	ErrorLarFileNotFound = errors.New("lar file not found")
-	ErrorLuaFileNotFound = errors.New("lua file not found")
+    ErrorLarFileNotFound      = errors.New("lar file not found")
+    ErrorLuaFileNotFound      = errors.New("lua file not found")
+    ErrorLarFileLoadDuplicate = errors.New("lar file load duplicate")
+    ErrorSearchPathNotExists  = errors.New("search path not a dir")
 )
 
 var (
-	InitCode = `
+    InitCode = `
 local _lar_load = lar_load
 lar_load = nil -- hide in global var
 local function custom_loader( name )
@@ -36,230 +38,228 @@ table.remove(package.searchers, 3)
 
 `
 )
+
 //Lua Archive
 type Lar struct {
-	z           *zip.ReadCloser
-	readiedFile map[string][]byte
-	fileReaders map[string]io.ReadCloser
-	L           *lua.State
+    L         *lua.State
+    mutexRun  sync.RWMutex
+    mutexLoad sync.RWMutex
+    loaders   map[string]*loader
 }
+
 // New Lar
 func New() *Lar {
-	lar := &Lar{}
-	lar.readiedFile = make(map[string][]byte)
-	lar.fileReaders = make(map[string]io.ReadCloser)
-	L := lua.NewState()
-	L.OpenLibs()
-	L.OpenGoLibs()
-	L.PushGoStruct(lar)
-	L.SetGlobal("LarContext")
-	L.Register("lar_load", lload)
+    lar := &Lar{
+        loaders: make(map[string]*loader),
+    }
+    L := lua.NewState()
+    L.OpenLibs()
+    L.OpenGoLibs()
+    L.PushGoStruct(lar)
+    L.SetGlobal("LarContext")
+    L.Register("lar_load", lload)
 
-	_ = L.DoString(InitCode)
-	lar.L = L
-	return lar
+    _ = L.DoString(InitCode)
+    lar.L = L
+    return lar
 }
+
 // search lua file in lar
 func lload(L *lua.State) int {
-	name := L.ToString(1)
-	L.GetGlobal("LarContext")
-	_app := L.ToGoStruct(-1)
-	if l, ok := _app.(*Lar); ok {
-		luaFilename := strings.Replace(name, ".", "/", -1) + ".lua"
-		if data, err := l.getBytes(luaFilename); err != nil || data == nil {
-			return 0
-		} else {
-			l.L.PushString(string(data))
-			return 1
-		}
-	}
-	return 0
+    name := L.ToString(1)
+    L.GetGlobal("LarContext")
+    _app := L.ToGoStruct(-1)
+    if l, ok := _app.(*Lar); ok {
+        luaFilename := strings.Replace(name, ".", "/", -1) + ".lua"
+        if data, err := l.getBytes(luaFilename); err != nil || data == nil {
+            return 0
+        } else {
+            l.L.PushString(string(data))
+            return 1
+        }
+    }
+    return 0
 }
+func (l *Lar) getBytes(luaFilename string) ([]byte, error) {
+    for _, loader := range l.loaders {
+        if data, err := loader.getBytes(luaFilename); err == nil && data != nil {
+            return data, err
+        }
+    }
+    return nil, ErrorLuaFileNotFound
+}
+
 // pack dir all lua file to a lar file
-func (l *Lar) Pack(dst, src string) error {
-	fw, err := os.Create(dst)
-	defer fw.Close()
-	if err != nil {
-		return err
-	}
-	zw := zip.NewWriter(fw)
-	defer func() {
-		_ = zw.Close()
-	}()
+func (l *Lar) Pack(dst, src, root string) error {
+    fw, err := os.Create(dst)
+    defer fw.Close()
+    if err != nil {
+        return err
+    }
+    zw := zip.NewWriter(fw)
+    defer func() {
+        _ = zw.Close()
+    }()
 
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		fh, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return err
-		}
-		name1 := strings.TrimPrefix(path, src)
-		name2 := strings.TrimPrefix(name1, string(filepath.Separator))
-		name3 := strings.Replace(name2, "\\", "/", -1)
-		fh.Name = name3
+    return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        fh, err := zip.FileInfoHeader(info)
+        if err != nil {
+            return err
+        }
+        name1 := strings.TrimPrefix(path, src)
+        name2 := strings.TrimPrefix(name1, string(filepath.Separator))
+        name3 := strings.Replace(name2, "\\", "/", -1)
+        name4 := strings.TrimPrefix(name3, src)
+        name5 := strings.TrimPrefix(name4, "/")
 
-		if info.IsDir() {
-			fh.Name += "/"
-		}
-		w, err := zw.CreateHeader(fh)
-		if err != nil {
-			return nil
-		}
-		if !fh.Mode().IsRegular() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".lua") {
-			return nil
-		}
-		fr, err := os.Open(path)
-		defer fr.Close()
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(w, fr)
-		log.Println("pack to", dst, path)
-		return err
-	})
+        fh.Name = name5
+
+        if info.IsDir() {
+            fh.Name += "/"
+        }
+        w, err := zw.CreateHeader(fh)
+        if err != nil {
+            return nil
+        }
+        if !fh.Mode().IsRegular() {
+            return nil
+        }
+        if !strings.HasSuffix(path, ".lua") {
+            return nil
+        }
+        fr, err := os.Open(path)
+        defer fr.Close()
+        if err != nil {
+            return err
+        }
+        _, err = io.Copy(w, fr)
+        log.Println("pack to", dst, path, "=>", fh.Name)
+        return err
+    })
 }
-// close lar
-func (l *Lar) Close() {
-	if l.z != nil {
-		_ = l.z.Close()
-	}
-	l.z = nil
+func (l *Lar) LoadFiles(files string) error {
+    for _, file := range strings.Split(files, ";") {
+        if err := l.loadFile(file); err != nil {
+            return err
+        }
+    }
+    return nil
 }
+
 // load lar form file disk
-func (l *Lar) LoadFile(file string, filename string) error {
-	if _, err := os.Stat(file); err != nil {
-		if os.IsNotExist(err) {
-			return ErrorLarFileNotFound
-		}
-		return err
-	}
-	if err := l.preloadLarFile(file); err != nil {
-		return err
-	}
-	return l.runFileInLar(filename)
-}
-// init lar from file
-func (l *Lar) preloadLarFile(file string) error {
-	zr, err := zip.OpenReader(file)
-	if err != nil {
-		return err
-	}
-	for _, file := range zr.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		fr, err := file.Open()
-		if err != nil {
-			return err
-		}
-		l.fileReaders[file.Name] = fr
-	}
+func (l *Lar) loadFile(file string) error {
+    l.mutexLoad.Lock()
+    defer l.mutexLoad.Unlock()
 
-	return nil
-}
-// load lar form memory
-func (l *Lar) LoadMemory(data []byte, filename string) error {
-	r := bytes.NewReader(data)
-	l.preloadLarMemory(r, r.Size())
-	return l.runFileInLar(filename)
-}
-// init memory lar
-func (l *Lar) preloadLarMemory(r io.ReaderAt, sz int64) error {
-	zr, err := zip.NewReader(r, sz)
-	if err != nil {
-		return err
-	}
-	for _, file := range zr.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		fr, err := file.Open()
-		if err != nil {
-			return err
-		}
-		l.fileReaders[file.Name] = fr
-	}
+    if _, ok := l.loaders[file]; ok {
+        return ErrorLuaFileNotFound
+    }
 
-	return nil
+    if _, err := os.Stat(file); err != nil {
+        if os.IsNotExist(err) {
+            return ErrorLarFileNotFound
+        }
+        return err
+    }
+
+    loader := newLarLoader()
+    if err := loader.preloadLarFile(file); err != nil {
+        return err
+    }
+    l.loaders[file] = loader
+    return nil
 }
+
+func (l *Lar) LoadMemory(customName string, data []byte) error {
+    l.mutexLoad.Lock()
+    defer l.mutexLoad.Unlock()
+
+    if _, ok := l.loaders[customName]; ok {
+        return ErrorLuaFileNotFound
+    }
+    loader := newLarLoader()
+    if err := loader.LoadMemory(data); err != nil {
+        return err
+    }
+    l.loaders[customName] = loader
+    return nil
+}
+
 // run lua from disk
 func (l *Lar) RunDiskFile(filename string) error {
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return err
-	}
-	return l.runString(string(data))
+    data, err := ioutil.ReadFile(filename)
+    if err != nil {
+        return err
+    }
+    return l.DoString(string(data))
 }
-// get bytes data in lar file
-func (l *Lar) getBytes(filename string) ([]byte, error) {
-	if cacheByte, ok := l.readiedFile[filename]; ok {
-		return cacheByte, nil
-	}
-	if fr, ok := l.fileReaders[filename]; ok {
-		if data, err := ioutil.ReadAll(fr); err != nil {
-			return nil, err
-		} else {
-			l.readiedFile[filename] = data
-			return data, nil
-		}
-	}
-	return nil, ErrorLuaFileNotFound
+
+// lua do file in lar
+func (l *Lar) DoFile(filename string) error {
+    if codeBytes, err := l.getBytes(filename); err != nil {
+        return err
+    } else {
+        return l.DoString(string(codeBytes))
+    }
 }
-// do file in lar
-func (l *Lar) runFileInLar(filename string) error {
-	data, err := l.getBytes(filename)
-	if err != nil {
-		return err
-	}
-	return l.runString(string(data))
+
+// lua do string
+func (l *Lar) DoString(code string) error {
+    l.mutexRun.RLock()
+    defer l.mutexRun.RUnlock()
+    return l.L.DoString(code)
 }
-// dostring
-func (l *Lar) runString(code string) error {
-	return l.L.DoString(code)
-}
+
 // add lua search path in filesystem
-func (l *Lar) AddSearchPath(s string) {
-	if s == "" {
-		return
-	}
-	if !strings.HasSuffix(s, "/?.lua") {
-		s = s + "/?.lua"
-	}
-	L := l.L
-	L.GetGlobal("package")
-	L.CheckType(1, lua.LUA_TTABLE)
+func (l *Lar) AddSearchPath(s string) error {
+    if s == "" {
+        return ErrorSearchPathNotExists
+    }
+    if !strings.HasSuffix(s, "/?.lua") {
+        s = s + "/?.lua"
+    }
+    if st, err := os.Stat(s); err != nil {
+        return err
+    } else {
+        if !st.IsDir() {
+            return ErrorSearchPathNotExists
+        }
+    }
+    L := l.L
+    L.GetGlobal("package")
+    L.CheckType(1, lua.LUA_TTABLE)
 
-	L.GetField(-1, "path")
-	L.CheckType(-1, lua.LUA_TSTRING)
-	luaPaths := L.CheckString(-1)
+    L.GetField(-1, "path")
+    L.CheckType(-1, lua.LUA_TSTRING)
+    luaPaths := L.CheckString(-1)
 
-	// concat package.path + new_path
-	paths := strings.Split(luaPaths, ";")
-	paths = append(paths, s)
-	paths = unique(paths)
-	luaPaths = strings.Join(paths, ";")
+    // concat package.path + new_path
+    paths := strings.Split(luaPaths, ";")
+    paths = append(paths, s)
+    paths = unique(paths)
+    luaPaths = strings.Join(paths, ";")
 
-	// set package.path
-	L.GetGlobal("package")
-	L.PushString("path")
-	L.PushString(luaPaths)
-	L.SetTable(-3)
-	os.Setenv("LUA_PATH", "scripts/?.lua")
+    // set package.path
+    L.GetGlobal("package")
+    L.PushString("path")
+    L.PushString(luaPaths)
+    L.SetTable(-3)
+    os.Setenv("LUA_PATH", "scripts/?.lua")
+    return nil
 }
+
 // make []string item unique
 func unique(intSlice []string) []string {
-	keys := make(map[string]bool)
-	var list []string
-	for _, entry := range intSlice {
-		if _, value := keys[entry]; !value {
-			keys[entry] = true
-			list = append(list, entry)
-		}
-	}
-	return list
+    keys := make(map[string]bool)
+    var list []string
+    for _, entry := range intSlice {
+        if _, value := keys[entry]; !value {
+            keys[entry] = true
+            list = append(list, entry)
+        }
+    }
+    return list
 }
