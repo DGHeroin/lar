@@ -48,11 +48,13 @@ type Lar struct {
 }
 
 // New Lar
-func New() *Lar {
+func New(L *lua.State) *Lar {
     lar := &Lar{
         loaders: make(map[string]*loader),
     }
-    L := lua.NewState()
+    if L == nil {
+        L = lua.NewState()
+    }
     L.OpenLibs()
     L.OpenGoLibs()
     L.PushGoStruct(lar)
