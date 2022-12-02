@@ -1,4 +1,4 @@
-package lar
+package larc
 
 import (
     "archive/zip"
@@ -20,7 +20,6 @@ func newLarLoader() *loader {
     return l
 }
 
-
 // close lar
 func (l *loader) Close() {
     if l.z != nil {
@@ -28,7 +27,6 @@ func (l *loader) Close() {
     }
     l.z = nil
 }
-
 
 // init lar from file
 func (l *loader) preloadLarFile(file string) error {
