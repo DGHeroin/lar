@@ -8,7 +8,7 @@ import (
 var (
     Cmd = &cobra.Command{
         Use:   "pack <args>",
-        Short: "打包",
+        Short: "pack a dir",
         RunE: func(cmd *cobra.Command, args []string) error {
             return doPack()
         },

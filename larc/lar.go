@@ -240,6 +240,15 @@ func (l *Lar) DoString(code string) error {
     return l.L.DoString(code)
 }
 
+func (l *Lar) AddSearchPaths(s ...string) error {
+    for _, str := range s {
+        if err := l.AddSearchPath(str); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
 // add lua search path in filesystem
 func (l *Lar) AddSearchPath(s string) error {
     if s == "" {
@@ -247,10 +256,13 @@ func (l *Lar) AddSearchPath(s string) error {
     }
 
     if st, err := os.Stat(s); err != nil {
+        if os.IsNotExist(err) {
+            return nil
+        }
         return err
     } else {
         if !st.IsDir() {
-            return ErrorSearchPathNotExists
+            return nil
         }
     }
     l.searchPaths = append(l.searchPaths, s)

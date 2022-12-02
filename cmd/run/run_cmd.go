@@ -8,7 +8,7 @@ import (
 
 var Cmd = &cobra.Command{
     Use:   "run <args>",
-    Short: "运行",
+    Short: "run lar",
     RunE: func(cmd *cobra.Command, args []string) error {
         return doRun()
     },
@@ -17,20 +17,20 @@ var Cmd = &cobra.Command{
 var (
     larFiles   []string
     entryFile  string
-    searchPath string
+    searchPath []string
 )
 
 func init() {
     Cmd.PersistentFlags().StringArrayVar(&larFiles, "f", []string{}, "lar files")
     Cmd.PersistentFlags().StringVar(&entryFile, "e", "main.lua", "entry file")
-    Cmd.PersistentFlags().StringVar(&searchPath, "s", "scripts", "search path")
+    Cmd.PersistentFlags().StringArrayVar(&searchPath, "s", []string{"./", "scripts"}, "search path")
 }
 
 func doRun() error {
     flag.Parse()
     L := larc.New()
-    if searchPath != "" {
-        err := L.AddSearchPath(searchPath)
+    if len(searchPath) > 0 {
+        err := L.AddSearchPaths(searchPath...)
         if err != nil {
             return err
         }
