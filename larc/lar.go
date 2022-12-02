@@ -47,8 +47,11 @@ type Lar struct {
     mutexLoad   sync.RWMutex
     loaders     map[string]*loader
     searchPaths []string
-    mail        *Mail
 }
+
+var (
+    PostNew func(*Lar)
+)
 
 // New Lar
 func New(Ls ...*lua.State) *Lar {
@@ -68,9 +71,11 @@ func New(Ls ...*lua.State) *Lar {
     L.SetGlobal("LarContext")
     L.Register("lar_load", lload)
 
-    lar.mail = newMail(L)
     _ = L.DoString(InitCode)
     lar.L = L
+    if PostNew != nil {
+        PostNew(lar)
+    }
     return lar
 }
 
